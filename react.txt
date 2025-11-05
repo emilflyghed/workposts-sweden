@@ -1,0 +1,2 @@
+1. Lägg till react router
+2. Lägg till tailwindcss (latest version)
