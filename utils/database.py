@@ -22,6 +22,7 @@ SCHEMA_STATEMENTS: Sequence[str] = (
         url TEXT NOT NULL,
         source TEXT NOT NULL,
         published_at TEXT,
+        last_application_date TEXT,
         description TEXT,
         employment_type TEXT,
         categories TEXT,
@@ -69,6 +70,7 @@ def initialise_database(conn: sqlite3.Connection) -> None:
     with conn:
         for statement in SCHEMA_STATEMENTS:
             conn.execute(statement)
+        _ensure_column(conn, "jobs", "last_application_date", "TEXT")
 
 
 def save_job_listings(jobs: Iterable[JobListing], conn: sqlite3.Connection | None = None, db_path: Path | None = None) -> int:
@@ -82,6 +84,7 @@ def save_job_listings(jobs: Iterable[JobListing], conn: sqlite3.Connection | Non
     for job in jobs:
         record = job.to_dict()
         record["categories"] = json.dumps(record.get("categories") or [])
+        record.setdefault("last_application_date", None)
         payloads.append(record)
 
     if not payloads:
@@ -101,6 +104,7 @@ def save_job_listings(jobs: Iterable[JobListing], conn: sqlite3.Connection | Non
                     url,
                     source,
                     published_at,
+                    last_application_date,
                     description,
                     employment_type,
                     categories,
@@ -112,6 +116,7 @@ def save_job_listings(jobs: Iterable[JobListing], conn: sqlite3.Connection | Non
                     :url,
                     :source,
                     :published_at,
+                    :last_application_date,
                     :description,
                     :employment_type,
                     :categories,
@@ -122,6 +127,7 @@ def save_job_listings(jobs: Iterable[JobListing], conn: sqlite3.Connection | Non
                     company=excluded.company,
                     location=excluded.location,
                     published_at=excluded.published_at,
+                    last_application_date=excluded.last_application_date,
                     description=excluded.description,
                     employment_type=excluded.employment_type,
                     categories=excluded.categories,
@@ -151,7 +157,7 @@ def load_job_listings(
         owned_connection = True
 
     query = [
-        "SELECT id, title, company, location, url, source, published_at, description, employment_type, categories, summary, created_at, updated_at",
+        "SELECT id, title, company, location, url, source, published_at, last_application_date, description, employment_type, categories, summary, created_at, updated_at",
         "FROM jobs",
         "WHERE 1=1",
     ]
@@ -184,3 +190,9 @@ def load_job_listings(
         conn.close()
 
     return records
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, column_type: str) -> None:
+    info = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    if not any(col[1] == column for col in info):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")

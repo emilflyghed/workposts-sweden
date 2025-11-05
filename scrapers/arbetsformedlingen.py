@@ -1,7 +1,7 @@
-﻿"""Playwright-powered scraper for Arbetsformedlingen."""
+"""Playwright-powered scraper for Arbetsformedlingen."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from . import BaseScraper, JobListing
@@ -93,6 +93,7 @@ class ArbetsformedlingenScraper(BaseScraper):
         description = ArbetsformedlingenScraper._extract_description(hit)
         categories = ArbetsformedlingenScraper._extract_categories(hit)
         published = ArbetsformedlingenScraper._parse_datetime(hit.get("publication_date"))
+        last_application = ArbetsformedlingenScraper._extract_application_deadline(hit)
         url = ArbetsformedlingenScraper._extract_url(hit)
 
         return JobListing(
@@ -102,6 +103,7 @@ class ArbetsformedlingenScraper(BaseScraper):
             url=url,
             source=ArbetsformedlingenScraper.source,
             published_at=published,
+            last_application_date=last_application,
             description=description,
             employment_type=BaseScraper.normalise_text(hit.get("employment_type")),
             categories=categories,
@@ -154,12 +156,42 @@ class ArbetsformedlingenScraper(BaseScraper):
     def _parse_datetime(raw: str | None) -> datetime | None:
         if not raw:
             return None
-        for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
-            try:
-                return datetime.strptime(raw, fmt)
-            except ValueError:
-                continue
-        return None
+        raw = raw.strip()
+        if not raw:
+            return None
+        if raw.endswith('Z'):
+            raw = raw[:-1] + '+00:00'
+        try:
+            dt = datetime.fromisoformat(raw)
+        except ValueError:
+            dt = None
+            for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+                try:
+                    dt = datetime.strptime(raw, fmt)
+                    break
+                except ValueError:
+                    continue
+            if dt is None:
+                return None
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc)
+        return dt
+
+    @staticmethod
+    def _extract_application_deadline(hit: dict[str, Any]) -> datetime | None:
+        raw = (
+            hit.get('application_deadline')
+            or hit.get('last_application_date')
+            or hit.get('application_last_date')
+        )
+        if isinstance(raw, dict):
+            raw = raw.get('date') or raw.get('text')
+        if isinstance(raw, list) and raw:
+            raw = raw[0]
+        if not isinstance(raw, str):
+            raw = BaseScraper.normalise_text(raw)
+        return ArbetsformedlingenScraper._parse_datetime(raw)
+
 
     @staticmethod
     def _extract_url(hit: dict[str, Any]) -> str:

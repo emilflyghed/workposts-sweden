@@ -24,6 +24,7 @@ JOB_COLUMNS = [
     "url",
     "source",
     "published_at",
+    "last_application_date",
     "description",
     "employment_type",
     "categories",
@@ -82,6 +83,10 @@ def jobs_to_dataframe(jobs: Iterable[JobListing] | Iterable[dict]) -> pd.DataFra
         df["categories"] = df["categories"].apply(
             lambda value: ", ".join(value) if isinstance(value, list) else (value or "")
         )
+    if "last_application_date" in df.columns:
+        dates = pd.to_datetime(df["last_application_date"], errors="coerce")
+        df["last_application_date"] = dates.dt.strftime("%Y-%m-%dT%H:%M:%S")
+        df.loc[dates.isna(), "last_application_date"] = ""
 
     for column in JOB_COLUMNS:
         if column not in df.columns:

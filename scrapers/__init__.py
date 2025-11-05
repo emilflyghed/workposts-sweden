@@ -26,6 +26,7 @@ class JobListing:
     url: str
     source: str
     published_at: datetime | None = None
+    last_application_date: datetime | None = None
     description: str | None = None
     employment_type: str | None = None
     categories: list[str] = field(default_factory=list)
@@ -36,6 +37,8 @@ class JobListing:
         payload = asdict(self)
         if self.published_at:
             payload["published_at"] = self.published_at.isoformat()
+        if self.last_application_date:
+            payload["last_application_date"] = self.last_application_date.isoformat()
         return payload
 
 
