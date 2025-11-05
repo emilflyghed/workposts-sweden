@@ -3,3 +3,5 @@ pandas>=2.0
 requests>=2.31
 groq>=0.7
 playwright>=1.45
+fastapi>=0.110
+uvicorn[standard]>=0.23
