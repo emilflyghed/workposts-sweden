@@ -5,7 +5,7 @@ import argparse
 import asyncio
 import logging
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import pandas as pd
 
@@ -13,9 +13,23 @@ from scrapers import JobListing, merge_job_lists
 from scrapers.arbetsformedlingen import ArbetsformedlingenScraper
 from scrapers.monster import MonsterScraper
 from scrapers.tng import TNGScraper
+from utils.database import DEFAULT_DB_PATH, load_job_listings, save_job_listings
 from utils.groq_client import GroqJobAnnotator
 
 logger = logging.getLogger(__name__)
+
+JOB_COLUMNS = [
+    "title",
+    "company",
+    "location",
+    "url",
+    "source",
+    "published_at",
+    "description",
+    "employment_type",
+    "categories",
+    "summary",
+]
 
 
 async def collect_jobs(
@@ -53,25 +67,43 @@ async def collect_jobs(
     return jobs
 
 
-def jobs_to_dataframe(jobs: Iterable[JobListing]) -> pd.DataFrame:
-    """Convert job listings to a tidy Pandas DataFrame."""
-    rows = [job.to_dict() for job in jobs]
+def jobs_to_dataframe(jobs: Iterable[JobListing] | Iterable[dict]) -> pd.DataFrame:
+    """Convert job listings or dictionaries to a tidy Pandas DataFrame."""
+    rows = []
+    for job in jobs:
+        if isinstance(job, JobListing):
+            record = job.to_dict()
+        else:
+            record = dict(job)
+        rows.append(record)
+
     if not rows:
-        return pd.DataFrame(columns=[
-            "title",
-            "company",
-            "location",
-            "url",
-            "source",
-            "published_at",
-            "description",
-            "employment_type",
-            "categories",
-            "summary",
-        ])
+        return pd.DataFrame(columns=JOB_COLUMNS)
+
     df = pd.DataFrame(rows)
-    df["categories"] = df.get("categories", pd.Series(dtype=object)).apply(lambda value: ", ".join(value) if isinstance(value, list) else value)
-    return df
+    if "categories" in df.columns:
+        df["categories"] = df["categories"].apply(
+            lambda value: ", ".join(value) if isinstance(value, list) else (value or "")
+        )
+
+    for column in JOB_COLUMNS:
+        if column not in df.columns:
+            df[column] = ""
+
+    ordered_columns = JOB_COLUMNS + [col for col in df.columns if col not in JOB_COLUMNS]
+    return df[ordered_columns]
+
+
+def load_jobs_dataframe_from_db(
+    *,
+    db_path: Path | None = None,
+    job_title: str | None = None,
+    location: str | None = None,
+    sources: Sequence[str] | None = None,
+) -> pd.DataFrame:
+    """Materialise job listings from SQLite into a dataframe."""
+    records = load_job_listings(db_path=db_path, job_title=job_title, location=location, sources=sources)
+    return jobs_to_dataframe(records)
 
 
 def export_to_csv(df: pd.DataFrame, output_path: Path) -> Path:
@@ -86,6 +118,11 @@ def export_to_json(df: pd.DataFrame, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_json(output_path, orient="records", force_ascii=False, indent=2)
     return output_path
+
+
+def persist_jobs(jobs: Iterable[JobListing], *, db_path: Path | None = None) -> int:
+    """Store the provided jobs in SQLite and return the number of upserts."""
+    return save_job_listings(jobs, db_path=db_path)
 
 
 def collect_jobs_sync(**kwargs) -> list[JobListing]:
@@ -104,6 +141,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enrich results with Groq summaries (requires GROQ_API_KEY).",
     )
+    parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help="Path to the SQLite database file.")
     parser.add_argument("--csv", type=Path, help="Optional CSV file to export the results to.")
     parser.add_argument("--json", type=Path, help="Optional JSON file to export the results to.")
     return parser.parse_args()
@@ -114,8 +152,9 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     args = parse_args()
     jobs = collect_jobs_sync(job_title=args.job_title, location=args.location, limit=args.limit, use_groq=args.groq)
+    upserts = persist_jobs(jobs, db_path=args.db)
     df = jobs_to_dataframe(jobs)
-    logger.info("Fetched %s jobs", len(df))
+    logger.info("Fetched %s jobs (%s upserted into %s)", len(df), upserts, args.db)
 
     if args.csv:
         export_to_csv(df, args.csv)
