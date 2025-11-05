@@ -26,6 +26,7 @@ class JobListing:
     url: str
     source: str
     published_at: datetime | None = None
+    last_application_date: datetime | None = None
     description: str | None = None
     employment_type: str | None = None
     categories: list[str] = field(default_factory=list)
@@ -36,6 +37,8 @@ class JobListing:
         payload = asdict(self)
         if self.published_at:
             payload["published_at"] = self.published_at.isoformat()
+        if self.last_application_date:
+            payload["last_application_date"] = self.last_application_date.isoformat()
         return payload
 
 
@@ -78,10 +81,20 @@ class BaseScraper(ABC):
         return await loop.run_in_executor(None, _do_request)
 
     @staticmethod
-    def normalise_text(value: str | None) -> str:
+    def normalise_text(value: Any) -> str:
         """Collapse whitespace and strip a text value while keeping fallbacks."""
-        if not value:
+        if value is None:
             return ""
+        if isinstance(value, dict):
+            # prefer common textual keys if present
+            for key in ("text", "label", "name", "value"):
+                if key in value and isinstance(value[key], str):
+                    return BaseScraper.normalise_text(value[key])
+            value = " ".join(str(part) for part in value.values())
+        elif isinstance(value, (list, tuple, set)):
+            value = " ".join(str(part) for part in value)
+        else:
+            value = str(value)
         return " ".join(value.split())
 
 

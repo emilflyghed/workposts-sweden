@@ -11,7 +11,6 @@ import pandas as pd
 
 from scrapers import JobListing, merge_job_lists
 from scrapers.arbetsformedlingen import ArbetsformedlingenScraper
-from scrapers.monster import MonsterScraper
 from scrapers.tng import TNGScraper
 from utils.database import DEFAULT_DB_PATH, load_job_listings, save_job_listings
 from utils.groq_client import GroqJobAnnotator
@@ -25,6 +24,7 @@ JOB_COLUMNS = [
     "url",
     "source",
     "published_at",
+    "last_application_date",
     "description",
     "employment_type",
     "categories",
@@ -36,22 +36,20 @@ async def collect_jobs(
     *,
     job_title: str | None = None,
     location: str | None = None,
-    limit: int = 20,
+    limit: int | None = None,
     use_groq: bool = False,
 ) -> list[JobListing]:
     """Fetch jobs from all scrapers concurrently and return the combined list."""
     scrapers = [
         ArbetsformedlingenScraper(),
-        MonsterScraper(),
         TNGScraper(),
     ]
-    tasks = [scraper.fetch_jobs(job_title=job_title, location=location, limit=limit) for scraper in scrapers]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
     job_lists: list[list[JobListing]] = []
-    for scraper, result in zip(scrapers, results, strict=True):
-        if isinstance(result, Exception):
-            logger.warning("%s scraper failed: %s", scraper.source, result)
+    for scraper in scrapers:
+        try:
+            result = await scraper.fetch_jobs(job_title=job_title, location=location, limit=limit)
+        except Exception as exc:  # pragma: no cover - defensive guard for runtime scraping errors
+            logger.warning("%s scraper failed: %s", scraper.source, exc)
             continue
         job_lists.append(result)
 
@@ -85,6 +83,10 @@ def jobs_to_dataframe(jobs: Iterable[JobListing] | Iterable[dict]) -> pd.DataFra
         df["categories"] = df["categories"].apply(
             lambda value: ", ".join(value) if isinstance(value, list) else (value or "")
         )
+    if "last_application_date" in df.columns:
+        dates = pd.to_datetime(df["last_application_date"], errors="coerce")
+        df["last_application_date"] = dates.dt.strftime("%Y-%m-%dT%H:%M:%S")
+        df.loc[dates.isna(), "last_application_date"] = ""
 
     for column in JOB_COLUMNS:
         if column not in df.columns:
@@ -135,7 +137,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Collect Swedish job postings from multiple sources.")
     parser.add_argument("--title", dest="job_title", help="Job title or keywords to search for.")
     parser.add_argument("--location", help="Preferred job location (city or region).")
-    parser.add_argument("--limit", type=int, default=20, help="Maximum number of jobs per source.")
+    parser.add_argument("--limit", type=int, help="Maximum number of jobs per source (omit for all available).")
     parser.add_argument(
         "--groq",
         action="store_true",
