@@ -35,7 +35,7 @@ async def collect_jobs(
     *,
     job_title: str | None = None,
     location: str | None = None,
-    limit: int = 20,
+    limit: int | None = None,
     use_groq: bool = False,
 ) -> list[JobListing]:
     """Fetch jobs from all scrapers concurrently and return the combined list."""
@@ -132,7 +132,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Collect Swedish job postings from multiple sources.")
     parser.add_argument("--title", dest="job_title", help="Job title or keywords to search for.")
     parser.add_argument("--location", help="Preferred job location (city or region).")
-    parser.add_argument("--limit", type=int, default=20, help="Maximum number of jobs per source.")
+    parser.add_argument("--limit", type=int, help="Maximum number of jobs per source (omit for all available).")
     parser.add_argument(
         "--groq",
         action="store_true",

@@ -23,6 +23,8 @@ MUNICIPALITY_CODE_MAP: dict[str, str] = {
     "jonkoping": "0680",
 }
 
+PAGE_SIZE = 100
+
 
 class ArbetsformedlingenScraper(BaseScraper):
     """Collect job postings by leveraging Playwright's request API."""
@@ -34,10 +36,10 @@ class ArbetsformedlingenScraper(BaseScraper):
         *,
         job_title: str | None = None,
         location: str | None = None,
-        limit: int = 20,
+        limit: int | None = None,
     ) -> list[JobListing]:
         params: dict[str, Any] = {
-            "limit": limit,
+            "limit": PAGE_SIZE,
             "offset": 0,
         }
         if job_title:
@@ -49,39 +51,32 @@ class ArbetsformedlingenScraper(BaseScraper):
         elif location:
             params["q"] = f"{job_title or ''} {location}".strip()
 
+        jobs: list[JobListing] = []
         async with launch_browser() as browser:
             context = await browser.new_context(locale="sv-SE")
             try:
-                response = await context.request.get(API_URL, params=params, timeout=15000)
-                if response.status != 200:
-                    return []
-                data = await response.json()
+                while True:
+                    response = await context.request.get(API_URL, params=params, timeout=20000)
+                    if response.status != 200:
+                        break
+                    data = await response.json()
+                    hits: list[dict[str, Any]] = data.get("hits", []) if isinstance(data, dict) else []
+                    if not hits:
+                        break
+
+                    for hit in hits:
+                        jobs.append(self._parse_hit(hit))
+                        if limit is not None and len(jobs) >= limit:
+                            break
+                    if limit is not None and len(jobs) >= limit:
+                        break
+
+                    params["offset"] += PAGE_SIZE
             finally:
                 await context.close()
 
-        hits: list[dict[str, Any]] = data.get("hits", []) if isinstance(data, dict) else []
-        jobs: list[JobListing] = []
-        for hit in hits[:limit]:
-            company = self._extract_company(hit)
-            location_text = self._extract_location(hit)
-            description = self._extract_description(hit)
-            categories = self._extract_categories(hit)
-            published = self._parse_datetime(hit.get("publication_date"))
-            url = self._extract_url(hit)
-
-            jobs.append(
-                JobListing(
-                    title=self.normalise_text(hit.get("headline") or "Unknown job"),
-                    company=company,
-                    location=location_text,
-                    url=url,
-                    source=self.source,
-                    published_at=published,
-                    description=description,
-                    employment_type=self.normalise_text(hit.get("employment_type")),
-                    categories=categories,
-                )
-            )
+        if limit is not None:
+            return jobs[:limit]
         return jobs
 
     @staticmethod
@@ -90,6 +85,27 @@ class ArbetsformedlingenScraper(BaseScraper):
             return None
         key = "".join(ch for ch in location.lower() if ch.isalnum())
         return MUNICIPALITY_CODE_MAP.get(key)
+
+    @staticmethod
+    def _parse_hit(hit: dict[str, Any]) -> JobListing:
+        company = ArbetsformedlingenScraper._extract_company(hit)
+        location_text = ArbetsformedlingenScraper._extract_location(hit)
+        description = ArbetsformedlingenScraper._extract_description(hit)
+        categories = ArbetsformedlingenScraper._extract_categories(hit)
+        published = ArbetsformedlingenScraper._parse_datetime(hit.get("publication_date"))
+        url = ArbetsformedlingenScraper._extract_url(hit)
+
+        return JobListing(
+            title=BaseScraper.normalise_text(hit.get("headline") or "Unknown job"),
+            company=company,
+            location=location_text,
+            url=url,
+            source=ArbetsformedlingenScraper.source,
+            published_at=published,
+            description=description,
+            employment_type=BaseScraper.normalise_text(hit.get("employment_type")),
+            categories=categories,
+        )
 
     @staticmethod
     def _extract_company(hit: dict[str, Any]) -> str:

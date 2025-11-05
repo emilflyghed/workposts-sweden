@@ -9,6 +9,7 @@ from . import BaseScraper, JobListing
 from utils.browser import launch_browser
 
 API_URL = "https://www.tng.se/wp-json/wp/v2/tng_job"
+PAGE_SIZE = 50
 
 
 class TNGScraper(BaseScraper):
@@ -21,10 +22,9 @@ class TNGScraper(BaseScraper):
         *,
         job_title: str | None = None,
         location: str | None = None,
-        limit: int = 20,
+        limit: int | None = None,
     ) -> list[JobListing]:
         jobs: list[JobListing] = []
-        per_page = min(limit, 50)
         page = 1
         search_query = job_title or ""
 
@@ -32,16 +32,16 @@ class TNGScraper(BaseScraper):
             context = await browser.new_context(locale="sv-SE")
             request = context.request
             try:
-                while len(jobs) < limit:
+                while True:
                     params: dict[str, Any] = {
                         "page": page,
-                        "per_page": per_page,
+                        "per_page": PAGE_SIZE,
                         "_fields": "id,title,link,excerpt,content,acf",
                     }
                     if search_query:
                         params["search"] = search_query
 
-                    response = await request.get(API_URL, params=params, timeout=15000)
+                    response = await request.get(API_URL, params=params, timeout=20000)
                     if response.status != 200:
                         break
                     data = await response.json()
@@ -55,15 +55,19 @@ class TNGScraper(BaseScraper):
                         if location and not self._matches_location(job.location, location):
                             continue
                         jobs.append(job)
-                        if len(jobs) >= limit:
+                        if limit is not None and len(jobs) >= limit:
                             break
+                    if limit is not None and len(jobs) >= limit:
+                        break
 
-                    if len(data) < per_page:
+                    if len(data) < PAGE_SIZE:
                         break
                     page += 1
             finally:
                 await context.close()
 
+        if limit is not None:
+            return jobs[:limit]
         return jobs
 
     def _parse_entry(self, entry: dict[str, Any]) -> JobListing | None:
