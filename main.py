@@ -11,7 +11,6 @@ import pandas as pd
 
 from scrapers import JobListing, merge_job_lists
 from scrapers.arbetsformedlingen import ArbetsformedlingenScraper
-from scrapers.monster import MonsterScraper
 from scrapers.tng import TNGScraper
 from utils.database import DEFAULT_DB_PATH, load_job_listings, save_job_listings
 from utils.groq_client import GroqJobAnnotator
@@ -42,16 +41,14 @@ async def collect_jobs(
     """Fetch jobs from all scrapers concurrently and return the combined list."""
     scrapers = [
         ArbetsformedlingenScraper(),
-        MonsterScraper(),
         TNGScraper(),
     ]
-    tasks = [scraper.fetch_jobs(job_title=job_title, location=location, limit=limit) for scraper in scrapers]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
     job_lists: list[list[JobListing]] = []
-    for scraper, result in zip(scrapers, results, strict=True):
-        if isinstance(result, Exception):
-            logger.warning("%s scraper failed: %s", scraper.source, result)
+    for scraper in scrapers:
+        try:
+            result = await scraper.fetch_jobs(job_title=job_title, location=location, limit=limit)
+        except Exception as exc:  # pragma: no cover - defensive guard for runtime scraping errors
+            logger.warning("%s scraper failed: %s", scraper.source, exc)
             continue
         job_lists.append(result)
 

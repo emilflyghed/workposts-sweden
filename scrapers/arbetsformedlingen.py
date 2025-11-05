@@ -1,16 +1,31 @@
-﻿"""Scraper for the Arbetsformedlingen JobTech public API."""
+﻿"""Playwright-powered scraper for Arbetsformedlingen."""
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
 
 from . import BaseScraper, JobListing
+from utils.browser import launch_browser
 
 API_URL = "https://jobsearch.api.jobtechdev.se/search"
 
+MUNICIPALITY_CODE_MAP: dict[str, str] = {
+    "stockholm": "0180",
+    "goteborg": "1480",
+    "malmo": "1280",
+    "uppsala": "0380",
+    "vasteras": "1980",
+    "orebro": "1880",
+    "linkoping": "0580",
+    "helsingborg": "1283",
+    "norrkoping": "0581",
+    "umea": "2280",
+    "jonkoping": "0680",
+}
+
 
 class ArbetsformedlingenScraper(BaseScraper):
-    """Collect job postings from Arbetsformedlingen's public JobTech API."""
+    """Collect job postings by leveraging Playwright's request API."""
 
     source = "Arbetsformedlingen"
 
@@ -21,19 +36,32 @@ class ArbetsformedlingenScraper(BaseScraper):
         location: str | None = None,
         limit: int = 20,
     ) -> list[JobListing]:
-        """Call the public API and return parsed job listings."""
         params: dict[str, Any] = {
             "limit": limit,
-            "q": job_title or "",
             "offset": 0,
         }
-        if location:
-            params["municipality"] = location
+        if job_title:
+            params["q"] = job_title
 
-        data = await self._request_json(API_URL, params=params)
-        hits: list[dict[str, Any]] = data.get("hits", [])
+        municipality_code = self._municipality_code(location) if location else None
+        if municipality_code:
+            params["municipality"] = municipality_code
+        elif location:
+            params["q"] = f"{job_title or ''} {location}".strip()
+
+        async with launch_browser() as browser:
+            context = await browser.new_context(locale="sv-SE")
+            try:
+                response = await context.request.get(API_URL, params=params, timeout=15000)
+                if response.status != 200:
+                    return []
+                data = await response.json()
+            finally:
+                await context.close()
+
+        hits: list[dict[str, Any]] = data.get("hits", []) if isinstance(data, dict) else []
         jobs: list[JobListing] = []
-        for hit in hits:
+        for hit in hits[:limit]:
             company = self._extract_company(hit)
             location_text = self._extract_location(hit)
             description = self._extract_description(hit)
@@ -55,6 +83,13 @@ class ArbetsformedlingenScraper(BaseScraper):
                 )
             )
         return jobs
+
+    @staticmethod
+    def _municipality_code(location: str | None) -> str | None:
+        if not location:
+            return None
+        key = "".join(ch for ch in location.lower() if ch.isalnum())
+        return MUNICIPALITY_CODE_MAP.get(key)
 
     @staticmethod
     def _extract_company(hit: dict[str, Any]) -> str:

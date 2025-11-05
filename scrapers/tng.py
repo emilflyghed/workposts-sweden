@@ -1,18 +1,18 @@
-﻿"""HTML scraper for TNG (Swedish recruitment agency)."""
+﻿"""Playwright-powered scraper for TNG job listings."""
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import urlencode, urljoin
 
 from bs4 import BeautifulSoup
 
 from . import BaseScraper, JobListing
+from utils.browser import launch_browser
 
-BASE_URL = "https://www.tng.se/lediga-jobb/"
+API_URL = "https://www.tng.se/wp-json/wp/v2/tng_job"
 
 
 class TNGScraper(BaseScraper):
-    """Scrape job postings listed on TNG."""
+    """Scrape job postings listed on TNG using their WordPress API via Playwright."""
 
     source = "TNG"
 
@@ -23,64 +23,81 @@ class TNGScraper(BaseScraper):
         location: str | None = None,
         limit: int = 20,
     ) -> list[JobListing]:
-        """Scrape the listing page and convert entries to JobListing objects."""
-        url = self._build_url(job_title, location)
-        response = await self._request(url)
-        soup = BeautifulSoup(response.text, "html.parser")
-        cards = soup.select("article.job-list__item, div.job-listing__item")
         jobs: list[JobListing] = []
-        for card in cards:
-            title_link = card.select_one("a.job-list__link, a.job-listing__link")
-            if not title_link:
-                continue
-            title = self.normalise_text(title_link.get_text())
-            link = urljoin(BASE_URL, title_link.get("href") or "")
-            company = self._parse_company(card)
-            location_text = self._parse_location(card)
-            snippet = self._parse_snippet(card)
+        per_page = min(limit, 50)
+        page = 1
+        search_query = job_title or ""
 
-            jobs.append(
-                JobListing(
-                    title=title or "Unknown job",
-                    company=company,
-                    location=location_text,
-                    url=link,
-                    source=self.source,
-                    description=snippet,
-                )
-            )
-            if len(jobs) >= limit:
-                break
+        async with launch_browser() as browser:
+            context = await browser.new_context(locale="sv-SE")
+            request = context.request
+            try:
+                while len(jobs) < limit:
+                    params: dict[str, Any] = {
+                        "page": page,
+                        "per_page": per_page,
+                        "_fields": "id,title,link,excerpt,content,acf",
+                    }
+                    if search_query:
+                        params["search"] = search_query
+
+                    response = await request.get(API_URL, params=params, timeout=15000)
+                    if response.status != 200:
+                        break
+                    data = await response.json()
+                    if not isinstance(data, list) or not data:
+                        break
+
+                    for entry in data:
+                        job = self._parse_entry(entry)
+                        if not job:
+                            continue
+                        if location and not self._matches_location(job.location, location):
+                            continue
+                        jobs.append(job)
+                        if len(jobs) >= limit:
+                            break
+
+                    if len(data) < per_page:
+                        break
+                    page += 1
+            finally:
+                await context.close()
+
         return jobs
 
-    @staticmethod
-    def _build_url(job_title: str | None, location: str | None) -> str:
-        params: dict[str, Any] = {}
-        if job_title:
-            params["s"] = job_title
-        if location:
-            params["location"] = location
-        if not params:
-            return BASE_URL
-        return f"{BASE_URL}?{urlencode(params)}"
+    def _parse_entry(self, entry: dict[str, Any]) -> JobListing | None:
+        title_html = entry.get("title", {}).get("rendered")
+        link = entry.get("link")
+        if not title_html or not link:
+            return None
+
+        title = self.normalise_text(BeautifulSoup(title_html, "html.parser").get_text())
+        excerpt_html = entry.get("excerpt", {}).get("rendered") or ""
+        description_html = entry.get("content", {}).get("rendered") or excerpt_html
+        description = self._clean_html(description_html)
+
+        acf = entry.get("acf") or {}
+        company = self.normalise_text(acf.get("employer") or acf.get("client") or "TNG")
+        location_text = self.normalise_text(acf.get("location") or acf.get("job_location") or "Sweden")
+
+        return JobListing(
+            title=title or "Unknown job",
+            company=company or "TNG",
+            location=location_text or "Sweden",
+            url=link,
+            source=self.source,
+            description=description,
+        )
+
+    def _clean_html(self, html: str) -> str:
+        if not html:
+            return ""
+        soup = BeautifulSoup(html, "html.parser")
+        return self.normalise_text(soup.get_text())
 
     @staticmethod
-    def _parse_company(card: BeautifulSoup) -> str:
-        company_node = card.select_one("span.job-list__company, span.job-listing__company")
-        if company_node:
-            return BaseScraper.normalise_text(company_node.get_text())
-        return "TNG"
-
-    @staticmethod
-    def _parse_location(card: BeautifulSoup) -> str:
-        location_node = card.select_one("span.job-list__location, span.job-listing__location")
-        if location_node:
-            return BaseScraper.normalise_text(location_node.get_text())
-        return "Sweden"
-
-    @staticmethod
-    def _parse_snippet(card: BeautifulSoup) -> str:
-        snippet_node = card.select_one("p.job-list__excerpt, div.job-listing__excerpt")
-        if snippet_node:
-            return BaseScraper.normalise_text(snippet_node.get_text())
-        return ""
+    def _matches_location(job_location: str, desired_location: str) -> bool:
+        job_normalised = "".join(ch for ch in job_location.lower() if ch.isalnum() or ch.isspace())
+        desired_normalised = "".join(ch for ch in desired_location.lower() if ch.isalnum() or ch.isspace())
+        return desired_normalised in job_normalised

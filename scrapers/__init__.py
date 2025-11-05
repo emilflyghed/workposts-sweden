@@ -78,10 +78,20 @@ class BaseScraper(ABC):
         return await loop.run_in_executor(None, _do_request)
 
     @staticmethod
-    def normalise_text(value: str | None) -> str:
+    def normalise_text(value: Any) -> str:
         """Collapse whitespace and strip a text value while keeping fallbacks."""
-        if not value:
+        if value is None:
             return ""
+        if isinstance(value, dict):
+            # prefer common textual keys if present
+            for key in ("text", "label", "name", "value"):
+                if key in value and isinstance(value[key], str):
+                    return BaseScraper.normalise_text(value[key])
+            value = " ".join(str(part) for part in value.values())
+        elif isinstance(value, (list, tuple, set)):
+            value = " ".join(str(part) for part in value)
+        else:
+            value = str(value)
         return " ".join(value.split())
 
 
